@@ -10,6 +10,7 @@
 #include <climits>
 #include <limits>
 #include <errno.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <poll.h>
@@ -290,7 +291,7 @@ public:
 	string getCommentTitle(bool withGradeReduction/*=false*/); // Suui
 	string getComment();
 	void splitArgs(string);
-	void runTest(time_t timeout);
+	void runTest(time_t timeout, rlim_t maxmemory);
 	bool match(string data);
 };
 
@@ -299,6 +300,7 @@ public:
  */
 class Evaluation {
 	int maxtime;
+	unsigned long maxmemory;
 	float grademin, grademax;
 	string variation;
 	bool noGrade;
@@ -1355,7 +1357,7 @@ void TestCase::splitArgs(string programArgs) {
 	argv[nargs] = NULL;
 }
 
-void TestCase::runTest(time_t timeout) {// Timeout in seconds
+void TestCase::runTest(time_t timeout, rlim_t maxmemory) {// Timeout in seconds, maxmemory in bytes
 	time_t start = time(NULL);
 	if ( programToRun > "" && programToRun.size() < 512) {
 		command = programToRun.c_str();
@@ -1405,6 +1407,14 @@ void TestCase::runTest(time_t timeout) {// Timeout in seconds
 	int fdmaster = -1;
 	if ((pid = forkpty(&fdmaster, NULL, &term, NULL)) == 0) {
 		setpgrp();
+		// Set memory limits
+		struct rlim rlim;
+		if (!getrlimit(RLIMIT_AS, &rlim)) {
+			if (rlim.rlim_cur > maxmemory) {
+				rlim.rlim_cur = maxmemory;
+				setrlimit(RLIMIT_AS, &rlim);
+			}
+		}
 		if (execve(command, (char * const *) argv, (char * const *) envv) == -1) {
 			perror("Internal error, execve fails");
 			abort(); //end of child
@@ -1684,6 +1694,7 @@ bool Evaluation::loadParams() {
 	grademin= Tools::getenv("VPL_GRADEMIN", 0.0);
 	grademax = Tools::getenv("VPL_GRADEMAX", 10);
 	maxtime = (int) Tools::getenv("VPL_MAXTIME", 20);
+	maxmemory = (unsigned long) Tools::getenv("VPL_MAXMEMORY", 1UL << 27); // 128MB
 	variation = Tools::toLower(Tools::trim(Tools::getenv("VPL_VARIATION","")));
 	noGrade = grademin >= grademax;
 	return true;
@@ -1724,7 +1735,7 @@ void Evaluation::runTests() {
 		if (maxtime - Timer::elapsedTime() < timeout) { // Try to run last case
 			timeout = maxtime - Timer::elapsedTime();
 		}
-		testCases[i].runTest(timeout);
+		testCases[i].runTest(timeout, maxmemory);
 		nruns++;
 		if (!testCases[i].isCorrectResult()) {
 			if (Stop::isTERMRequested())
